@@ -1,5 +1,7 @@
 # 4G LTE Modem Proxy
 
+[![Demo screenshot](media/example_screenshot.png)](media/example.mp4)
+
 This project provides a transparent proxy service that routes HTTP and SOCKS5 traffic through a 4G LTE modem (Huawei E3372). It exposes:
 
 * An HTTP API (Axum) to list and reboot network interfaces backed by the modem.
