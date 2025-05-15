@@ -1,49 +1,58 @@
-use prometheus::{GaugeVec, register_gauge_vec};
-use slog::{Logger, error};
+use lazy_static::lazy_static;
+use prometheus::{register_gauge_vec, GaugeVec};
+use slog::{error, Logger};
 pub use tikv_jemalloc_ctl::Error;
 use tikv_jemalloc_ctl::{epoch, stats};
 
-lazy_static::lazy_static! {
+lazy_static! {
     static ref JEMALLOC_ALLOCATED: GaugeVec = register_gauge_vec!(
         "jemalloc_allocated_bytes",
         "Bytes allocated by jemalloc",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_ACTIVE: GaugeVec = register_gauge_vec!(
         "jemalloc_active_bytes",
         "Bytes in active arenas",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_METADATA: GaugeVec = register_gauge_vec!(
         "jemalloc_metadata_bytes",
         "Bytes used for metadata",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_RESIDENT: GaugeVec = register_gauge_vec!(
         "jemalloc_resident_bytes",
         "Bytes resident in RAM",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_MAPPED: GaugeVec = register_gauge_vec!(
         "jemalloc_mapped_bytes",
         "Bytes mapped by jemalloc",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_RETAINED: GaugeVec = register_gauge_vec!(
         "jemalloc_retained_bytes",
         "Bytes retained by jemalloc",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_DIRTY: GaugeVec = register_gauge_vec!(
         "jemalloc_dirty_bytes",
         "Bytes dirty in RAM",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
     static ref JEMALLOC_FRAGMENTATION: GaugeVec = register_gauge_vec!(
         "jemalloc_fragmentation_bytes",
         "Bytes fragmented in RAM",
         &["cluster", "server_ip"]
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 pub fn spawn_allocator_metrics_loop(cluster: String, ip_addr: String, logger: Logger) {

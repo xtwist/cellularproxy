@@ -1,0 +1,32 @@
+[package]
+name = "modem"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+derive_builder = "0.20.2"
+lazy_static = "1.5.0"
+anyhow = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slog = { workspace = true }
+uuid        = { version = "1.16.0", features = ["v4", "v5"] }
+get_if_addrs = { workspace = true }
+tikv-jemalloc-ctl = { version = "0.6.0", features = ["stats"] }
+prometheus = { workspace = true }
+libc = "0.2.172"
+socks5-protocol ="0.3.5"
+base64 = "0.22.1"
+async-trait = "0.1.88"
+quick-xml = { version = "0.20.0", features = ["serialize"] }
+reqwest = { version = "0.12.15", features = ["cookies", "json"] }
+hex = "0.4"
+log = "0.4.27"
+openssl = "0.10.72"
+

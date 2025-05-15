@@ -14,7 +14,6 @@ use base64::{Engine as _, engine::general_purpose};
 use prometheus::{Encoder, TextEncoder};
 use slog::{Logger, debug};
 use tokio::sync::oneshot;
-use crate::jemalloc::spawn_allocator_metrics_loop;
 
 async fn metrics_handler() -> impl IntoResponse {
     let metric_families = prometheus::gather();
@@ -92,7 +91,6 @@ pub async fn start_metrics_server(
     logger: Logger,
 ) -> oneshot::Sender<()> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    
 
     tokio::spawn(async move {
         let mut app = Router::new()

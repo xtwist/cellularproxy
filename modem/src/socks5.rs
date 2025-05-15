@@ -1,6 +1,18 @@
-use std::collections::HashMap;
-use std::ffi::{c_void, CString};
-use std::net::{IpAddr, SocketAddr};
+use anyhow::{anyhow, Result};
+use libc::{c_void, setsockopt, SOL_SOCKET, SO_BINDTODEVICE};
+use socks5_protocol::{
+    Address, AuthMethod, AuthRequest, AuthResponse, CommandRequest, CommandResponse, Version,
+};
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    net::{IpAddr, SocketAddr},
+    os::fd::AsRawFd,
+};
+use tokio::{
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    net::{TcpSocket, TcpStream},
+};
 
 async fn tcp_connect_via_interface(
     remote_addr: SocketAddr,
@@ -30,7 +42,7 @@ async fn tcp_connect_via_interface(
 
             // Connect and return the stream
             socket.connect(remote_addr).await
-        },
+        }
         IpAddr::V6(_) => {
             let socket = TcpSocket::new_v6()?;
             socket.set_nodelay(true)?;
@@ -57,24 +69,27 @@ async fn tcp_connect_via_interface(
     }
 }
 
-pub async fn handle_socks5(mut stream: TcpStream, iface_map: HashMap<String, String>) -> Result<()> {
+pub async fn handle_socks5(
+    mut stream: TcpStream,
+    iface_map: HashMap<String, String>,
+) -> Result<()> {
     // 1) SOCKS5 greeting
-    Version::read(&mut stream).await?;                      // expect 0x05
-    let methods = AuthRequest::read(&mut stream).await?;    // read NMETHODS + METHODS
-    // choose username/password or fail
+    Version::read(&mut stream).await?; // expect 0x05
+    let methods = AuthRequest::read(&mut stream).await?; // read NMETHODS + METHODS
+                                                         // choose username/password or fail
     let chosen = if methods.0.contains(&AuthMethod::UsernamePassword) {
         AuthMethod::UsernamePassword
     } else {
         AuthMethod::NoAcceptableMethod
     };
-    Version::V5.write(&mut stream).await?;                  // send 0x05
-    AuthResponse::new(chosen).write(&mut stream).await?;    // send METHOD
+    Version::V5.write(&mut stream).await?; // send 0x05
+    AuthResponse::new(chosen).write(&mut stream).await?; // send METHOD
     if chosen != AuthMethod::UsernamePassword {
         return Err(anyhow!("no supported auth methods"));
     }
 
     // 2) RFC-1929 username/password sub-negotiation
-    let v = stream.read_u8().await?;                        // expect 0x01
+    let v = stream.read_u8().await?; // expect 0x01
     if v != 0x01 {
         return Err(anyhow!("invalid auth version {}", v));
     }
@@ -90,8 +105,8 @@ pub async fn handle_socks5(mut stream: TcpStream, iface_map: HashMap<String, Str
     let ok = username == "modem" && iface_map.contains_key(&password);
 
     // reply sub-negotiation status
-    stream.write_u8(0x01).await?;                           // version
-    stream.write_u8(if ok { 0x00 } else { 0x01 }).await?;   // status
+    stream.write_u8(0x01).await?; // version
+    stream.write_u8(if ok { 0x00 } else { 0x01 }).await?; // status
 
     let ifname = &iface_map.get(&password).unwrap();
 
@@ -102,10 +117,7 @@ pub async fn handle_socks5(mut stream: TcpStream, iface_map: HashMap<String, Str
         .to_socket_addr()
         .map_err(|_| anyhow!("only IP addrs supported"))?;
 
-    let mut outbound = match tcp_connect_via_interface(
-        dest_sa,
-        ifname
-    ).await {
+    let mut outbound = match tcp_connect_via_interface(dest_sa, ifname).await {
         Ok(outbound) => outbound,
         Err(e) => {
             return Err(anyhow!("connect: {}", e));

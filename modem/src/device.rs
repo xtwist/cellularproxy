@@ -1,44 +1,12 @@
-use anyhow::{anyhow, Context, Result};
-use get_if_addrs::get_if_addrs;
-use socket2::{Socket, Type};
-use socks5_protocol::{
-    Address, AuthMethod, AuthRequest, AuthResponse, CommandRequest, CommandResponse,
-    Version,
-};
-use socks5_proto::{
-    Response,
-    handshake::{
-        Method as HandshakeMethod, Request as HandshakeRequest, Response as HandshakeResponse,
-    },
-};
-use std::{collections::HashMap, net::SocketAddr};
-use std::ffi::CString;
-use std::net::IpAddr;
-use std::os::fd::{AsRawFd};
-use axum::{Json, Router};
-use axum::response::{Response as AxumResponse};
-use axum::response::IntoResponse;
-use axum::routing::get;
-use clap::Parser;
-use http::StatusCode;
-use serde::Serialize;
-use serde_json::json;
-use slog::{info, o, Drain, FnValue, Logger, PushFnValue, Record};
-use tokio::{
-    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
-use tokio::net::TcpSocket;
+use anyhow::Result;
+use serde::{ser::SerializeStruct, Serialize};
 use uuid::Uuid;
-use libc::{c_void, setsockopt, SOL_SOCKET, SO_BINDTODEVICE};
-use serde::ser::SerializeStruct;
-use tikv_jemallocator::Jemalloc;
 
 #[derive(Clone, Debug)]
 pub struct Device {
-    id: Uuid,
-    name: String, // interface name, e.g. "eth0", "ppp0"
-    ip: String,   // IP address of the interface
+    pub(crate) id: Uuid,
+    pub(crate) name: String, // interface name, e.g. "eth0", "ppp0"
+    pub(crate) ip: String,   // IP address of the interface
 }
 
 impl Serialize for Device {
@@ -55,7 +23,7 @@ impl Serialize for Device {
 }
 
 /// Helper: read /proc/net/route and return the iface whose Destination is 0.0.0.0
-fn get_default_interface() -> Result<String> {
+pub fn get_default_interface() -> Result<String> {
     let data = std::fs::read_to_string("/proc/net/route")?;
     for line in data.lines().skip(1) {
         let cols: Vec<_> = line.split_whitespace().collect();
