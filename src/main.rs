@@ -1,20 +1,17 @@
 use anyhow::Result;
 use axum::{Router, routing::get};
 use clap::Parser;
-use slog::{Drain, FnValue, Logger, PushFnValue, Record, info, o, error};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tikv_jemallocator::Jemalloc;
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use modem::{
     api::{API, list_interfaces},
-    socks5::handle_socks5,
+    jemalloc::spawn_allocator_metrics_loop,
+    metrics::start_metrics_server,
+    modem_huaweie337::HuaweiE337,
+    socks5::{Socks5Builder},
 };
-use modem::jemalloc::spawn_allocator_metrics_loop;
-use modem::metrics::start_metrics_server;
-use modem::modem_huaweie337::{HuaweiE337};
-use modem::socks5::Socks5Builder;
+use slog::{Drain, FnValue, Logger, PushFnValue, Record, error, info, o};
+use std::{net::SocketAddr, sync::Arc};
+use tikv_jemallocator::Jemalloc;
+use tokio::{net::TcpListener, sync::Mutex};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,6 +24,9 @@ struct Config {
 
     #[clap(long, env = "IP_MODEM_API", default_value = "192.168.8.1")]
     ip_modem_api: String,
+
+    #[clap(long, env = "TIMEOUT_MODEM_API", default_value = "30")]
+    timeout_modem_api: u64,
 
     #[clap(long, env = "PORT_API", default_value = "4444")]
     port_api: u16,
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
 
     let api_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_api));
 
-    let mut modem_huaweie337 = HuaweiE337::new(cfg.ip_modem_api, 30);
+    let mut modem_huaweie337 = HuaweiE337::new(cfg.ip_modem_api, cfg.timeout_modem_api);
     modem_huaweie337.init().await?;
 
     let api = API::builder()
@@ -110,7 +110,8 @@ async fn main() -> Result<()> {
         cfg.prometheus_username,
         cfg.prometheus_password,
         logger.clone(),
-    ).await;
+    )
+    .await;
 
     info!(logger, "Prometheus Started"; "addr" => %prometheus_addr);
 
@@ -123,7 +124,9 @@ async fn main() -> Result<()> {
         .iface_map(ifaces.clone())
         .logger(logger)
         .build()
-        .expect("invalid builder configuration");
+        .expect("invalid SOCKS5 builder configuration");
+
+    info!(logger, "SOCKS5 Proxy Started"; "addr" => %socks5_addr);
 
     if let Err(e) = socks5_server.run().await {
         error!(logger, "socks5 error"; "error" => %e);

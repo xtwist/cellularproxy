@@ -1,23 +1,25 @@
-use std::{collections::HashMap, io, net::{SocketAddr}};
-use std::net::AddrParseError;
-use std::string::FromUtf8Error;
+use crate::tcp::tcp_connect_via_interface;
 use derive_builder::Builder;
 use slog::{error, Logger};
-use tokio::{
-    io::{copy_bidirectional},
-    net::{TcpStream},
-};
-use socks5_proto::handshake::password::{Request as PasswordRequest, Response as PasswordResponse};
 use socks5_proto::{
-    Address, Command, Reply, Request, Response,
     handshake::{
+        password::{Request as PasswordRequest, Response as PasswordResponse},
         Method as HandshakeMethod, Request as HandshakeRequest, Response as HandshakeResponse,
     },
+    Address, Command, Reply, Request, Response,
+};
+use std::{
+    collections::HashMap,
+    io,
+    net::{AddrParseError, SocketAddr},
+    result,
+    string::FromUtf8Error,
 };
 use thiserror::Error;
-use tokio::net::TcpListener;
-use crate::tcp::tcp_connect_via_interface;
-use std::result;
+use tokio::{
+    io::copy_bidirectional,
+    net::{TcpListener, TcpStream},
+};
 
 #[derive(Debug, Error)]
 pub enum Socks5Error {
@@ -77,12 +79,12 @@ pub type Result<T> = result::Result<T, Socks5Error>;
 impl Socks5 {
     /// Consume the builder and start serving forever.
     pub async fn run(self) -> Result<Socks5Error> {
-        let listener = TcpListener::bind(self.listen_addr).await.map_err(Socks5Error::Listen)?;
+        let listener = TcpListener::bind(self.listen_addr)
+            .await
+            .map_err(Socks5Error::Listen)?;
 
         let logger = self.logger.clone();
         let iface_map = self.iface_map.clone();
-
-        slog::info!(logger, "SOCKS5 proxy listening on {}", self.listen_addr);
 
         loop {
             let (stream, peer) = listener.accept().await.map_err(Socks5Error::Accept)?;
@@ -107,7 +109,11 @@ impl Socks5 {
             .map_err(Socks5Error::Handshake)?;
 
         // 2) check USER/PASS support
-        if !hs_req.methods.iter().any(|&m| m == HandshakeMethod::PASSWORD) {
+        if !hs_req
+            .methods
+            .iter()
+            .any(|&m| m == HandshakeMethod::PASSWORD)
+        {
             HandshakeResponse::new(HandshakeMethod::UNACCEPTABLE)
                 .write_to(&mut client)
                 .await
@@ -149,9 +155,10 @@ impl Socks5 {
         // 8) dispatch
         match req.command {
             Command::Connect => {
-                let (_sent, _recv) = Self::server_socks5_connect(ifname, req.address, client).await?;
+                let (_sent, _recv) =
+                    Self::server_socks5_connect(ifname, req.address, client).await?;
                 Ok(())
-            },
+            }
             cmd @ Command::Associate => {
                 Response::new(Reply::ConnectionNotAllowed, req.address)
                     .write_to(&mut client)
