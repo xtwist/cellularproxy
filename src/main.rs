@@ -12,6 +12,7 @@ use slog::{Drain, FnValue, Logger, PushFnValue, Record, error, info, o};
 use std::{net::SocketAddr, sync::Arc};
 use tikv_jemallocator::Jemalloc;
 use tokio::{net::TcpListener, sync::Mutex};
+use modem::tcp::OsFingerprint;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -47,6 +48,8 @@ struct Config {
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
+const DEFAULT_FINGERPRINT: OsFingerprint = OsFingerprint::Windows;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -120,6 +123,7 @@ async fn main() -> Result<()> {
     let socks5_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_socks5));
 
     let socks5_server = Socks5Builder::default()
+        .fingerprint(DEFAULT_FINGERPRINT)
         .listen_addr(socks5_addr)
         .iface_map(ifaces.clone())
         .logger(logger.clone())

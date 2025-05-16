@@ -1,4 +1,5 @@
-use crate::tcp::tcp_connect_via_interface;
+use crate::tcp::{tcp_connect_via_interface, tcp_connect_with_fingerprint, OsFingerprint};
+use crate::username::parse_username;
 use derive_builder::Builder;
 use slog::{error, Logger};
 use socks5_proto::{
@@ -15,6 +16,7 @@ use std::{
     result,
     string::FromUtf8Error,
 };
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::{
     io::copy_bidirectional,
@@ -66,9 +68,10 @@ pub enum Socks5Error {
     Utf8(#[from] FromUtf8Error),
 }
 
-#[derive(Builder)]
+#[derive(Builder, Clone)]
 #[builder(pattern = "owned")]
 pub struct Socks5 {
+    fingerprint: OsFingerprint,
     listen_addr: SocketAddr,
     iface_map: HashMap<String, String>,
     logger: Logger,
@@ -85,14 +88,17 @@ impl Socks5 {
 
         let logger = self.logger.clone();
         let iface_map = self.iface_map.clone();
+        let server = Arc::new(self);
 
         loop {
             let (stream, peer) = listener.accept().await.map_err(Socks5Error::Accept)?;
-            let lm = iface_map.clone();
-            let lg = logger.clone();
+            let server = Arc::clone(&server);               // cheap clone of the Arc
+            let iface_map = server.iface_map.clone();
+            let logger    = server.logger.clone();
+            
             tokio::spawn(async move {
-                if let Err(err) = Socks5::handle_client(stream, lm).await {
-                    error!(lg, "client {} error: {}", peer, err);
+                if let Err(err) = server.handle_client(stream, iface_map).await {
+                    error!(logger, "client {} error: {}", peer, err);
                 }
             });
         }
@@ -100,6 +106,7 @@ impl Socks5 {
 
     /// Per‐connection handler: does the SOCKS5 handshake, auth, CONNECT, proxying.
     async fn handle_client(
+        &self,
         mut client: TcpStream,
         iface_map: HashMap<String, String>,
     ) -> Result<()> {
@@ -135,7 +142,11 @@ impl Socks5 {
         let password = String::from_utf8(pwd_req.password)?;
 
         // 5) validate
+        let (username, fingerprint) = parse_username(username.as_str(), self.fingerprint)
+            .map_err(|_| Socks5Error::AuthenticationFailed(username.clone()))?;
+
         let auth_ok = username == "modem" && iface_map.contains_key(&password);
+
         PasswordResponse::new(auth_ok)
             .write_to(&mut client)
             .await
@@ -156,7 +167,7 @@ impl Socks5 {
         match req.command {
             Command::Connect => {
                 let (_sent, _recv) =
-                    Self::server_socks5_connect(ifname, req.address, client).await?;
+                    Self::server_socks5_connect(ifname, req.address, fingerprint, client).await?;
                 Ok(())
             }
             cmd @ Command::Associate => {
@@ -179,6 +190,7 @@ impl Socks5 {
     async fn server_socks5_connect(
         ifname: &str,
         requested_addr: Address,
+        fingerprint: OsFingerprint,
         mut client: TcpStream,
     ) -> Result<(u64, u64)> {
         let sock_addr: SocketAddr = requested_addr
@@ -186,7 +198,7 @@ impl Socks5 {
             .parse()
             .map_err(Socks5Error::InvalidAddress)?;
 
-        let mut outbound = tcp_connect_via_interface(sock_addr, ifname)
+        let mut outbound = tcp_connect_with_fingerprint(sock_addr, ifname, fingerprint)
             .await
             .map_err(Socks5Error::Connect)?;
 
