@@ -1,19 +1,17 @@
 use anyhow::Result;
 use axum::{Router, routing::get};
 use clap::Parser;
-use slog::{Drain, FnValue, Logger, PushFnValue, Record, info, o};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tikv_jemallocator::Jemalloc;
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use modem::{
     api::{API, list_interfaces},
-    socks5::handle_socks5,
+    jemalloc::spawn_allocator_metrics_loop,
+    metrics::start_metrics_server,
+    modem_huaweie337::HuaweiE337,
+    socks5::{Socks5Builder},
 };
-use modem::jemalloc::spawn_allocator_metrics_loop;
-use modem::metrics::start_metrics_server;
-use modem::modem_huaweie337::{HuaweiE337};
+use slog::{Drain, FnValue, Logger, PushFnValue, Record, error, info, o};
+use std::{net::SocketAddr, sync::Arc};
+use tikv_jemallocator::Jemalloc;
+use tokio::{net::TcpListener, sync::Mutex};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,10 +25,13 @@ struct Config {
     #[clap(long, env = "IP_MODEM_API", default_value = "192.168.8.1")]
     ip_modem_api: String,
 
+    #[clap(long, env = "TIMEOUT_MODEM_API", default_value = "30")]
+    timeout_modem_api: u64,
+
     #[clap(long, env = "PORT_API", default_value = "4444")]
     port_api: u16,
 
-    #[clap(long, env = "PORT_SOCKS5", default_value = "7777")]
+    #[clap(long, env = "PORT_SOCKS5", default_value = "1080")]
     port_socks5: u16,
 
     #[clap(long, env = "PORT_PROMETHEUS", default_value = "8888")]
@@ -84,7 +85,7 @@ async fn main() -> Result<()> {
 
     let api_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_api));
 
-    let mut modem_huaweie337 = HuaweiE337::new(cfg.ip_modem_api, 30);
+    let mut modem_huaweie337 = HuaweiE337::new(cfg.ip_modem_api, cfg.timeout_modem_api);
     modem_huaweie337.init().await?;
 
     let api = API::builder()
@@ -99,13 +100,6 @@ async fn main() -> Result<()> {
     });
     info!(logger, "API Started"; "addr" => %api_addr);
 
-    let socks5_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_socks5));
-    let socks5_listener = TcpListener::bind(socks5_addr)
-        .await
-        .expect("bind SOCKS5 listener");
-    info!(logger, "SOCKS5 Started"; "addr" => %socks5_addr);
-
-
     spawn_allocator_metrics_loop(cfg.cluster.clone(), cfg.ip.clone(), logger.clone());
     info!(logger, "Jemalloc metrics loop started");
 
@@ -116,19 +110,27 @@ async fn main() -> Result<()> {
         cfg.prometheus_username,
         cfg.prometheus_password,
         logger.clone(),
-    ).await;
+    )
+    .await;
 
     info!(logger, "Prometheus Started"; "addr" => %prometheus_addr);
 
     let ifaces = list_interfaces();
 
-    loop {
-        let (stream, _) = socks5_listener.accept().await?;
-        let iface_map = ifaces.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_socks5(stream, iface_map).await {
-                eprintln!("connection error: {:?}", e);
-            }
-        });
-    }
+    let socks5_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_socks5));
+
+    let socks5_server = Socks5Builder::default()
+        .listen_addr(socks5_addr)
+        .iface_map(ifaces.clone())
+        .logger(logger.clone())
+        .build()
+        .expect("invalid SOCKS5 builder configuration");
+
+    info!(logger, "SOCKS5 Proxy Started"; "addr" => %socks5_addr);
+
+    if let Err(e) = socks5_server.run().await {
+        error!(logger, "socks5 error"; "error" => %e);
+    };
+
+    Ok(())
 }

@@ -981,7 +981,9 @@ dependencies = [
  "serde",
  "serde_json",
  "slog",
+ "socks5-proto",
  "socks5-protocol",
+ "thiserror 1.0.69",
  "tikv-jemalloc-ctl",
  "tokio",
  "uuid",
@@ -1562,6 +1564,17 @@ checksum = "4f5fd57c80058a56cf5c777ab8a126398ece8e442983605d280a44ce79d0edef"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socks5-proto"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d91431c4672e25e372ef46bc554be8f315068c03608f99267a71ad32a12e8c4"
+dependencies = [
+ "bytes",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
