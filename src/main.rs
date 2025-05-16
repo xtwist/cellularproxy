@@ -31,7 +31,7 @@ struct Config {
     #[clap(long, env = "PORT_API", default_value = "4444")]
     port_api: u16,
 
-    #[clap(long, env = "PORT_SOCKS5", default_value = "7777")]
+    #[clap(long, env = "PORT_SOCKS5", default_value = "1080")]
     port_socks5: u16,
 
     #[clap(long, env = "PORT_PROMETHEUS", default_value = "8888")]
@@ -128,6 +128,6 @@ async fn main() -> Result<()> {
     if let Err(e) = socks5_server.run().await {
         error!(logger, "socks5 error"; "error" => %e);
     };
-    
+
     Ok(())
 }
