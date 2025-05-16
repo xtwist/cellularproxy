@@ -1,6 +1,7 @@
 use std::{
     ffi::CString,
     io,
+    mem::size_of_val,
     net::{IpAddr, SocketAddr},
     os::fd::AsRawFd,
 };
@@ -13,6 +14,8 @@ pub enum OsFingerprint {
     Windows,
     Linux,
     Android,
+    MacOS,
+    IOS,
 }
 
 pub async fn tcp_connect_with_fingerprint(
@@ -29,7 +32,7 @@ pub async fn tcp_connect_with_fingerprint(
     socket.set_nodelay(true)?;
     socket.set_keepalive(true)?;
 
-    // 2) bind to interface (exactly as you had it):
+    // 2) bind to interface
     let ifname_c = CString::new(ifname)?;
     let ret = unsafe {
         setsockopt(
@@ -51,18 +54,18 @@ pub async fn tcp_connect_with_fingerprint(
     socket.connect(remote_addr).await
 }
 
-/// On Linux you can tweak TTL, buffer sizes, etc., to match common defaults.
-/// (For real p0f‐style option ordering you’d need a full userspace TCP stack—
-/// this just gets you the TTL & bufsize part.)
+/// Tweak TTL & sock buf sizes to match each OS’s usual defaults
 fn apply_fingerprint_opts(fd: i32, fp: OsFingerprint) -> io::Result<()> {
-    // these are the “typical” defaults you’ll see in the wild:
+    // (ttl, bufsize)
     let (ttl, buf) = match fp {
-        OsFingerprint::Windows => (128, 64 * 1024),   // TTL=128, 64 KiB buffers
-        OsFingerprint::Linux   => (64,  29_200),      // TTL=64, ~29 KiB buffers
-        OsFingerprint::Android => (64,  44_800),      // TTL=64, ~44 KiB buffers
+        OsFingerprint::Windows => (128, 64 * 1024),    // TTL=128, 64 KiB
+        OsFingerprint::Linux   => (64,  29_200),       // TTL=64, ~29 KiB
+        OsFingerprint::Android => (64,  44_800),       // TTL=64, ~44 KiB
+        OsFingerprint::MacOS   => (64,  65_536),       // TTL=64, 64 KiB
+        OsFingerprint::IOS     => (64,  32_768),       // TTL=64, 32 KiB
     };
 
-    // 3a) set IP TTL
+    // set IP TTL
     let rc = unsafe {
         setsockopt(
             fd,
@@ -76,7 +79,7 @@ fn apply_fingerprint_opts(fd: i32, fp: OsFingerprint) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    // 3b) set send buffer
+    // set send buffer
     let rc = unsafe {
         setsockopt(
             fd,
@@ -90,7 +93,7 @@ fn apply_fingerprint_opts(fd: i32, fp: OsFingerprint) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    // 3c) set recv buffer
+    // set recv buffer
     let rc = unsafe {
         setsockopt(
             fd,
@@ -105,59 +108,4 @@ fn apply_fingerprint_opts(fd: i32, fp: OsFingerprint) -> io::Result<()> {
     }
 
     Ok(())
-}
-
-pub async fn tcp_connect_via_interface(
-    remote_addr: SocketAddr,
-    ifname: &str,
-) -> io::Result<TcpStream> {
-    // Approach 1: Using TcpSocket (simplest and most reliable)
-    match remote_addr.ip() {
-        IpAddr::V4(_) => {
-            let socket = TcpSocket::new_v4()?;
-            socket.set_nodelay(true)?;
-            socket.set_keepalive(true)?;
-
-            // Use SO_BINDTODEVICE to bind the socket to a specific network interface
-            let ifname_c = CString::new(ifname)?;
-            let res = unsafe {
-                setsockopt(
-                    socket.as_raw_fd(),
-                    SOL_SOCKET,
-                    SO_BINDTODEVICE,
-                    ifname_c.as_ptr() as *const c_void,
-                    ifname_c.as_bytes().len() as u32,
-                )
-            };
-            if res != 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // Connect and return the stream
-            socket.connect(remote_addr).await
-        }
-        IpAddr::V6(_) => {
-            let socket = TcpSocket::new_v6()?;
-            socket.set_nodelay(true)?;
-            socket.set_keepalive(true)?;
-
-            // Use SO_BINDTODEVICE to bind the socket to a specific network interface
-            let ifname_c = CString::new(ifname)?;
-            let res = unsafe {
-                setsockopt(
-                    socket.as_raw_fd(),
-                    SOL_SOCKET,
-                    SO_BINDTODEVICE,
-                    ifname_c.as_ptr() as *const c_void,
-                    ifname_c.as_bytes().len() as u32,
-                )
-            };
-            if res != 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // Connect and return the stream
-            socket.connect(remote_addr).await
-        }
-    }
 }

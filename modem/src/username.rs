@@ -29,6 +29,8 @@ pub fn parse_username(
             "windows" => OsFingerprint::Windows,
             "linux"   => OsFingerprint::Linux,
             "android" => OsFingerprint::Android,
+            "macos"  => OsFingerprint::MacOS,
+            "ios"    => OsFingerprint::IOS,
             other     => return Err(ParseUsernameError::InvalidFingerprint(other.to_string())),
         };
         Ok((name.to_string(), fp))

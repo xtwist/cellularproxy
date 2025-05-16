@@ -1,4 +1,4 @@
-use crate::tcp::{tcp_connect_via_interface, tcp_connect_with_fingerprint, OsFingerprint};
+use crate::tcp::{tcp_connect_with_fingerprint, OsFingerprint};
 use crate::username::parse_username;
 use derive_builder::Builder;
 use slog::{error, Logger};
