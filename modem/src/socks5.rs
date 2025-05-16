@@ -1,7 +1,8 @@
-use anyhow::{Result};
 use std::{collections::HashMap, io, net::{SocketAddr}};
 use std::net::AddrParseError;
 use std::string::FromUtf8Error;
+use derive_builder::Builder;
+use slog::{error, Logger};
 use tokio::{
     io::{copy_bidirectional},
     net::{TcpStream},
@@ -14,10 +15,18 @@ use socks5_proto::{
     },
 };
 use thiserror::Error;
+use tokio::net::TcpListener;
 use crate::tcp::tcp_connect_via_interface;
+use std::result;
 
 #[derive(Debug, Error)]
 pub enum Socks5Error {
+    #[error("failed to bind to address: {0}")]
+    Listen(#[source] io::Error),
+
+    #[error("failed to accept connection: {0}")]
+    Accept(#[source] io::Error),
+
     #[error("handshake failed: {0}")]
     Handshake(#[source] socks5_proto::Error),
 
@@ -55,122 +64,132 @@ pub enum Socks5Error {
     Utf8(#[from] FromUtf8Error),
 }
 
-pub async fn handle_socks5(
-    mut client: TcpStream,
+#[derive(Builder)]
+#[builder(pattern = "owned")]
+pub struct Socks5 {
+    listen_addr: SocketAddr,
     iface_map: HashMap<String, String>,
-) -> Result<(), Socks5Error> {
-    // 1) Read and parse the SOCKS5 handshake
-    let hs_req = HandshakeRequest::read_from(&mut client)
-        .await
-        .map_err(Socks5Error::Handshake)?;
+    logger: Logger,
+}
 
-    // 2) Check for USERNAME/PASSWORD method
-    if !hs_req
-        .methods
-        .iter()
-        .any(|&m| m == HandshakeMethod::PASSWORD)
-    {
-        // Tell the client no acceptable methods, then error out
-        HandshakeResponse::new(HandshakeMethod::UNACCEPTABLE)
+pub type Result<T> = result::Result<T, Socks5Error>;
+
+impl Socks5 {
+    /// Consume the builder and start serving forever.
+    pub async fn run(self) -> Result<Socks5Error> {
+        let listener = TcpListener::bind(self.listen_addr).await.map_err(Socks5Error::Listen)?;
+
+        let logger = self.logger.clone();
+        let iface_map = self.iface_map.clone();
+
+        slog::info!(logger, "SOCKS5 proxy listening on {}", self.listen_addr);
+
+        loop {
+            let (stream, peer) = listener.accept().await.map_err(Socks5Error::Accept)?;
+            let lm = iface_map.clone();
+            let lg = logger.clone();
+            tokio::spawn(async move {
+                if let Err(err) = Socks5::handle_client(stream, lm).await {
+                    error!(lg, "client {} error: {}", peer, err);
+                }
+            });
+        }
+    }
+
+    /// Per‐connection handler: does the SOCKS5 handshake, auth, CONNECT, proxying.
+    async fn handle_client(
+        mut client: TcpStream,
+        iface_map: HashMap<String, String>,
+    ) -> Result<()> {
+        // 1) handshake
+        let hs_req = HandshakeRequest::read_from(&mut client)
+            .await
+            .map_err(Socks5Error::Handshake)?;
+
+        // 2) check USER/PASS support
+        if !hs_req.methods.iter().any(|&m| m == HandshakeMethod::PASSWORD) {
+            HandshakeResponse::new(HandshakeMethod::UNACCEPTABLE)
+                .write_to(&mut client)
+                .await
+                .map_err(Socks5Error::ResponseWrite)?;
+            return Err(Socks5Error::UnsupportedMethod);
+        }
+
+        // 3) ack USER/PASS
+        HandshakeResponse::new(HandshakeMethod::PASSWORD)
             .write_to(&mut client)
             .await
             .map_err(Socks5Error::ResponseWrite)?;
-        return Err(Socks5Error::UnsupportedMethod);
-    }
 
-    // 3) Acknowledge USERNAME/PASSWORD
-    HandshakeResponse::new(HandshakeMethod::PASSWORD)
-        .write_to(&mut client)
-        .await
-        .map_err(Socks5Error::ResponseWrite)?;
+        // 4) read credentials
+        let pwd_req = PasswordRequest::read_from(&mut client)
+            .await
+            .map_err(Socks5Error::PasswordRequest)?;
+        let username = String::from_utf8(pwd_req.username)?;
+        let password = String::from_utf8(pwd_req.password)?;
 
-    // 4) Read the password request
-    let pwd_req = PasswordRequest::read_from(&mut client)
-        .await
-        .map_err(Socks5Error::PasswordRequest)?;
-
-    // 5) Decode credentials
-    let username = String::from_utf8(pwd_req.username)?;
-    let password = String::from_utf8(pwd_req.password)?;
-
-    // 6) Validate
-    let auth_ok = username == "modem" && iface_map.contains_key(&password);
-    PasswordResponse::new(auth_ok)
-        .write_to(&mut client)
-        .await
-        .map_err(Socks5Error::PasswordResponseWrite)?;
-    if !auth_ok {
-        return Err(Socks5Error::AuthenticationFailed(username));
-    }
-
-    // 7) Read the actual SOCKS5 request
-    let req = Request::read_from(&mut client)
-        .await
-        .map_err(Socks5Error::RequestRead)?;
-
-    let ifname = match iface_map
-        .get(&password) {
-        Some(ifname) => ifname,
-        None => {
-            Response::new(Reply::GeneralFailure, req.address)
-                .write_to(&mut client)
-                .await
-                .map_err(Socks5Error::ResponseWrite)?;
+        // 5) validate
+        let auth_ok = username == "modem" && iface_map.contains_key(&password);
+        PasswordResponse::new(auth_ok)
+            .write_to(&mut client)
+            .await
+            .map_err(Socks5Error::PasswordResponseWrite)?;
+        if !auth_ok {
             return Err(Socks5Error::AuthenticationFailed(username));
         }
-    };
 
-    // 8) Dispatch on command
-    match req.command {
-        Command::Connect => {
-            server_socks5_connect(ifname, req.address, client).await?;
-        }
-        cmd @ Command::Associate => {
-            // only CONNECT is allowed in this implementation
-            Response::new(Reply::ConnectionNotAllowed, req.address)
-                .write_to(&mut client)
-                .await
-                .map_err(Socks5Error::ResponseWrite)?;
-            return Err(Socks5Error::CommandNotAllowed(cmd));
-        }
-        cmd => {
-            Response::new(Reply::CommandNotSupported, req.address)
-                .write_to(&mut client)
-                .await
-                .map_err(Socks5Error::ResponseWrite)?;
-            return Err(Socks5Error::UnsupportedCommand(cmd));
+        // 6) read SOCKS5 request
+        let req = Request::read_from(&mut client)
+            .await
+            .map_err(Socks5Error::RequestRead)?;
+
+        // 7) lookup interface name
+        let ifname = iface_map.get(&password).unwrap(); // safe—just checked
+
+        // 8) dispatch
+        match req.command {
+            Command::Connect => {
+                let (_sent, _recv) = Self::server_socks5_connect(ifname, req.address, client).await?;
+                Ok(())
+            },
+            cmd @ Command::Associate => {
+                Response::new(Reply::ConnectionNotAllowed, req.address)
+                    .write_to(&mut client)
+                    .await
+                    .map_err(Socks5Error::ResponseWrite)?;
+                Err(Socks5Error::CommandNotAllowed(cmd))
+            }
+            cmd => {
+                Response::new(Reply::CommandNotSupported, req.address)
+                    .write_to(&mut client)
+                    .await
+                    .map_err(Socks5Error::ResponseWrite)?;
+                Err(Socks5Error::UnsupportedCommand(cmd))
+            }
         }
     }
 
-    Ok(())
-}
+    async fn server_socks5_connect(
+        ifname: &str,
+        requested_addr: Address,
+        mut client: TcpStream,
+    ) -> Result<(u64, u64)> {
+        let sock_addr: SocketAddr = requested_addr
+            .to_string()
+            .parse()
+            .map_err(Socks5Error::InvalidAddress)?;
 
-async fn server_socks5_connect(
-    ifname: &str,
-    requested_addr: Address,
-    mut client: TcpStream,
-) -> Result<(), Socks5Error> {
-    // Parse the target socket address
-    let sock_addr: SocketAddr = requested_addr
-        .to_string()
-        .parse()
-        .map_err(Socks5Error::InvalidAddress)?;
+        let mut outbound = tcp_connect_via_interface(sock_addr, ifname)
+            .await
+            .map_err(Socks5Error::Connect)?;
 
-    // Open the outbound connection via the specified interface
-    let mut outbound = tcp_connect_via_interface(sock_addr, ifname)
-        .await
-        .map_err(Socks5Error::Connect)?;
+        Response::new(Reply::Succeeded, requested_addr)
+            .write_to(&mut client)
+            .await
+            .map_err(Socks5Error::ResponseWrite)?;
 
-    // Tell the client the CONNECT succeeded
-    Response::new(Reply::Succeeded, requested_addr)
-        .write_to(&mut client)
-        .await
-        .map_err(Socks5Error::ResponseWrite)?;
-
-    // Pipe data both ways
-    copy_bidirectional(&mut client, &mut outbound)
-        .await
-        .map_err(Socks5Error::Connect)?;
-
-    Ok(())
+        copy_bidirectional(&mut client, &mut outbound)
+            .await
+            .map_err(Socks5Error::Connect)
+    }
 }

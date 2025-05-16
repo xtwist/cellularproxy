@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{Router, routing::get};
 use clap::Parser;
-use slog::{Drain, FnValue, Logger, PushFnValue, Record, info, o};
+use slog::{Drain, FnValue, Logger, PushFnValue, Record, info, o, error};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tikv_jemallocator::Jemalloc;
@@ -14,6 +14,7 @@ use modem::{
 use modem::jemalloc::spawn_allocator_metrics_loop;
 use modem::metrics::start_metrics_server;
 use modem::modem_huaweie337::{HuaweiE337};
+use modem::socks5::Socks5Builder;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -99,13 +100,6 @@ async fn main() -> Result<()> {
     });
     info!(logger, "API Started"; "addr" => %api_addr);
 
-    let socks5_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_socks5));
-    let socks5_listener = TcpListener::bind(socks5_addr)
-        .await
-        .expect("bind SOCKS5 listener");
-    info!(logger, "SOCKS5 Started"; "addr" => %socks5_addr);
-
-
     spawn_allocator_metrics_loop(cfg.cluster.clone(), cfg.ip.clone(), logger.clone());
     info!(logger, "Jemalloc metrics loop started");
 
@@ -122,13 +116,18 @@ async fn main() -> Result<()> {
 
     let ifaces = list_interfaces();
 
-    loop {
-        let (stream, _) = socks5_listener.accept().await?;
-        let iface_map = ifaces.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_socks5(stream, iface_map).await {
-                eprintln!("connection error: {:?}", e);
-            }
-        });
-    }
+    let socks5_addr = SocketAddr::from(([0, 0, 0, 0], cfg.port_socks5));
+
+    let socks5_server = Socks5Builder::default()
+        .listen_addr(socks5_addr)
+        .iface_map(ifaces.clone())
+        .logger(logger)
+        .build()
+        .expect("invalid builder configuration");
+
+    if let Err(e) = socks5_server.run().await {
+        error!(logger, "socks5 error"; "error" => %e);
+    };
+    
+    Ok(())
 }
