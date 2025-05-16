@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
     let socks5_server = Socks5Builder::default()
         .listen_addr(socks5_addr)
         .iface_map(ifaces.clone())
-        .logger(logger)
+        .logger(logger.clone())
         .build()
         .expect("invalid SOCKS5 builder configuration");
 
